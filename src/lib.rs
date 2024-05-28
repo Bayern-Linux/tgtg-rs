@@ -1,13 +1,20 @@
+mod error;
+
 use std::str::FromStr;
 use std::time::Duration;
 use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::StatusCode;
 use serde_json::json;
+use tokio::time::Instant;
+use tracing::info;
+use crate::error::TgtgError;
 
 const MAX_POLLING_TRIES: u8 = 24;
 
 struct Client {
     base_url: String,
     email: String,
+    access_token: Option<String>,
     refresh_token: Option<String>,
     user_id: Option<String>,
     datadome_cookie: Option<String>,
@@ -15,6 +22,7 @@ struct Client {
     proxies: Option<Vec<String>>,
     reqwest_client: reqwest::Client,
     access_token_lifetime: u64,
+    last_time_token_refreshed: Instant,
     device_type: String,
 }
 impl Default for Client {
@@ -48,7 +56,7 @@ impl Default for Client {
 }
 
 impl Client {
-    async fn request_token(&self) {
+    async fn request_token(&mut self) {
 
         let response = self.reqwest_client.post(&format!("{}auth/v3/authByEmail", self.base_url))
             .json(&json!({
@@ -56,11 +64,10 @@ impl Client {
             "email": self.email}))
             .send()
             .await.unwrap();
-        // TODO: Extract polling ID
-        self.poll(0).await;
         assert_eq!(response.status(), 200);
+        self.poll(0).await.unwrap();
     }
-    async fn poll(&self, polling_id: usize) {
+    async fn poll(&mut self, polling_id: usize) -> Result<(), TgtgError>{
         for _ in 0..MAX_POLLING_TRIES{
             let response = self.reqwest_client.post(&format!("{}auth/v3/authByRequestPollingId", self.base_url))
                 .json(&json!({
@@ -68,7 +75,27 @@ impl Client {
                 "email": self.email}))
                 .send()
                 .await.unwrap();
+            match response.status() {
+                StatusCode::ACCEPTED => {
+                    info!("Check your mailbox");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+                StatusCode::OK => {
+                    info!("Token received");
+                    let json = response.json().await.unwrap();
+                    self.access_token = json["access_token"];
+                    self.refresh_token = json["refresh_token"];
+                    self.last_time_token_refreshed = Instant::now();
+                    self.user_id = json["startup_data"]["user"]["user_id"];
+                    return Ok(());
+                }
+                i => {
+                    return Err(TgtgError::PollingError(i.to_string()));
+                }
+            }
         }
+        Err(TgtgError::PollingError("Max polling tries exceeded".to_string()))
     }
 }
 
@@ -78,7 +105,7 @@ mod test {
 
     #[tokio::test]
     async fn test_request_token() {
-        let client = Client::default();
+        let mut client = Client::default();
         client.request_token().await;
     }
 }
