@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::time::Duration;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::StatusCode;
-use serde::de::Unexpected::Option;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 use tracing::info;
