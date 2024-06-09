@@ -2,15 +2,15 @@ mod error;
 
 mod items;
 
-use std::str::FromStr;
-use std::time::Duration;
+use crate::error::TgtgError;
+use crate::items::Items;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::str::FromStr;
+use std::time::Duration;
 use tokio::time::Instant;
-use tracing::info;
-use crate::error::TgtgError;
-use crate::items::Items;
+use tracing::{debug, info};
 
 const MAX_POLLING_TRIES: u8 = 24;
 
@@ -25,68 +25,93 @@ struct Client {
     proxies: Option<Vec<String>>,
     reqwest_client: reqwest::Client,
     access_token_lifetime: u64,
-    last_time_token_refreshed: Option<Instant>,
+    last_time_token_refreshed: Instant,
     device_type: String,
 }
 impl Default for Client {
     fn default() -> Self {
         let reqwest_client = reqwest::Client::builder()
             // TODO: Make configurable
-            .user_agent("TGTG/22.11.11 Dalvik/2.1.0 (Linux; U; Android 14; Pixel 7 Build/UPB3.230519.008)")
+            .user_agent(
+                "TGTG/22.11.11 Dalvik/2.1.0 (Linux; U; Android 14; Pixel 7 Build/UPB3.230519.008)",
+            )
             .timeout(Duration::from_secs(2))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::from_iter([
-                    (HeaderName::from_str("accept-language").unwrap(), HeaderValue::from_str("en-GB").unwrap()),
-                    (HeaderName::from_str("accept").unwrap(), HeaderValue::from_str("application/json").unwrap()),
-                    (HeaderName::from_str("content-type").unwrap(), HeaderValue::from_str("application/json; charset=utf-8").unwrap()),
-                    (HeaderName::from_str("Accept-Encoding").unwrap(), HeaderValue::from_str("gzip").unwrap())]);
+                    (
+                        HeaderName::from_str("accept-language").unwrap(),
+                        HeaderValue::from_str("en-GB").unwrap(),
+                    ),
+                    (
+                        HeaderName::from_str("accept").unwrap(),
+                        HeaderValue::from_str("application/json").unwrap(),
+                    ),
+                    (
+                        HeaderName::from_str("content-type").unwrap(),
+                        HeaderValue::from_str("application/json; charset=utf-8").unwrap(),
+                    ),
+                    (
+                        HeaderName::from_str("Accept-Encoding").unwrap(),
+                        HeaderValue::from_str("gzip").unwrap(),
+                    ),
+                ]);
                 headers
             })
-            .build().unwrap();
+            .build()
+            .unwrap();
         Self {
             base_url: "https://apptoogoodtogo.com/api/".to_string(),
             email: "test@email.com".to_string(),
-            access_token: None,
             refresh_token: None,
             user_id: None,
             datadome_cookie: None,
             reqwest_client,
+            access_token: None,
             language: "en-GB".to_string(),
             proxies: None,
             access_token_lifetime: 86400,
-            last_time_token_refreshed: None,
+            last_time_token_refreshed: Instant::now(),
             device_type: "ANDROID".to_string(),
         }
     }
 }
 
 impl Client {
-    async fn request_token(&mut self) {
-
-        let response = self.reqwest_client.post(&format!("{}auth/v3/authByEmail", self.base_url))
+    async fn login(&mut self) {
+        let response = self
+            .reqwest_client
+            .post(&format!("{}auth/v3/authByEmail", self.base_url))
             .json(&json!({
             "device_type": self.device_type,
             "email": self.email}))
             .send()
-            .await.unwrap();
+            .await
+            .unwrap();
         if response.status() == 200 {
             let first_response: Value = response.json().await.unwrap();
             match first_response["state"].as_str().unwrap() {
                 "TERMS" => panic!("Error: Account not linked to tgtg"),
-                "WAIT" => self.poll(first_response["polling_id"].to_string()).await.unwrap(),
+                "WAIT" => self
+                    .poll(first_response["polling_id"].to_string())
+                    .await
+                    .unwrap(),
                 _ => {}
             }
+        } else {
+            panic!("Error: {}", response.status())
         }
-        else { panic!("Error: {}", response.status()) }
     }
-    async fn poll(&mut self, polling_id: String) -> Result<(), TgtgError>{
-        for _ in 0..MAX_POLLING_TRIES{
-            let response = self.reqwest_client.post(&format!("{}auth/v3/authByRequestPollingId", self.base_url))
+    async fn poll(&mut self, polling_id: String) -> Result<(), TgtgError> {
+        for _ in 0..MAX_POLLING_TRIES {
+            let response = self
+                .reqwest_client
+                .post(&format!("{}auth/v3/authByRequestPollingId", self.base_url))
                 .json(&json!({
                 "device_type": self.device_type,
                 "email": self.email}))
                 .send()
-                .await.unwrap();
+                .await
+                .unwrap();
             match response.status() {
                 StatusCode::ACCEPTED => {
                     info!("Check your mailbox");
@@ -98,7 +123,7 @@ impl Client {
                     let json: Value = response.json().await.unwrap();
                     self.access_token = Some(json["access_token"].to_string());
                     self.refresh_token = Some(json["refresh_token"].to_string());
-                    self.last_time_token_refreshed = Some(Instant::now());
+                    self.last_time_token_refreshed = Instant::now();
                     self.user_id = Some(json["startup_data"]["user"]["user_id"].to_string());
                     return Ok(());
                 }
@@ -107,28 +132,41 @@ impl Client {
                 }
             }
         }
-        Err(TgtgError::PollingError("Max polling tries exceeded".to_string()))
+        Err(TgtgError::PollingError(
+            "Max polling tries exceeded".to_string(),
+        ))
     }
     async fn get_items(&self, items: Items) {
-        let response = self.reqwest_client.post(&format!("{}item/v8/", self.base_url))
+        let response = self
+            .reqwest_client
+            .post(&format!("{}item/v8/", self.base_url))
             .json(&json!(items))
             .send()
-            .await.unwrap();
+            .await
+            .unwrap();
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::items::Position;
     use super::*;
+    use crate::items::Position;
+    use std::fs::read_to_string;
+
+    fn get_client() -> Client {
+        Client {
+            email: read_to_string(".email").unwrap(),
+            ..Default::default()
+        }
+    }
 
     #[tokio::test]
     async fn test_request_token() {
-        let mut client = Client::default();
-        client.request_token().await;
+        let mut client = get_client();
+        client.login().await;
     }
     async fn test_get_items() {
-        let client = Client::default();
+        let client = get_client();
         let test_items = Items {
             origin: Position {
                 latitude: 49.476411,
@@ -149,6 +187,5 @@ mod test {
             we_care_only: false,
         };
         client.get_items(test_items).await;
-
     }
 }
