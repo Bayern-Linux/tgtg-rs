@@ -28,6 +28,7 @@ struct Client {
     last_time_token_refreshed: Instant,
     device_type: String,
 }
+
 impl Default for Client {
     fn default() -> Self {
         let reqwest_client = reqwest::Client::builder()
@@ -165,6 +166,7 @@ mod test {
         let mut client = get_client();
         client.login().await;
     }
+
     async fn test_get_items() {
         let client = get_client();
         let test_items = Items {
