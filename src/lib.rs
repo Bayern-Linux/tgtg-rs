@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 const MAX_POLLING_TRIES: u8 = 24;
 
@@ -89,7 +89,9 @@ impl Client {
             .await
             .unwrap();
         if response.status() == 200 {
-            let first_response: Value = response.json().await.unwrap();
+            let response_text = response.text().await.unwrap();
+            debug!("authbyEmail Response: {}", response_text);
+            let first_response: Value = serde_json::from_str(&response_text).unwrap();
             match first_response["state"].as_str().unwrap() {
                 "TERMS" => panic!("Error: Account not linked to tgtg"),
                 "WAIT" => self
@@ -109,7 +111,8 @@ impl Client {
                 .post(&format!("{}auth/v3/authByRequestPollingId", self.base_url))
                 .json(&json!({
                 "device_type": self.device_type,
-                "email": self.email}))
+                "email": self.email,
+                "request_polling_id": polling_id}))
                 .send()
                 .await
                 .unwrap();
@@ -129,7 +132,7 @@ impl Client {
                     return Ok(());
                 }
                 i => {
-                    return Err(TgtgError::PollingError(i.to_string()));
+                    return Err(TgtgError::PollingError(format!("Status: {}\n Body: {}", i, response.text().await.unwrap())));
                 }
             }
         }
@@ -153,6 +156,7 @@ mod test {
     use super::*;
     use crate::items::Position;
     use std::fs::read_to_string;
+    use tracing_subscriber::EnvFilter;
 
     fn get_client() -> Client {
         Client {
@@ -163,6 +167,10 @@ mod test {
 
     #[tokio::test]
     async fn test_request_token() {
+        // Start with tracing level set to trace
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("trace"))
+            .init();
         let mut client = get_client();
         client.login().await;
     }
